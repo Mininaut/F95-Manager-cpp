@@ -142,7 +142,7 @@ Use warnings as lightweight content markers you control.
    ```
    git clone https://github.com/Mininaut/F95-Manager-cpp.git
    cd F95-Manager-cpp
-   cmake -G "MinGW Makefiles" ..
+   cmake -G "MinGW Makefiles"
    cmake --build . --config Release
    ```
 3. The binary will be in `build/f95_manager_gui.exe/`. Place it alongside your data (or copy your existing `app_settings.json` / `app_config.json`) and run it.
