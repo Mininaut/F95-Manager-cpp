@@ -145,7 +145,7 @@ Use warnings as lightweight content markers you control.
    cmake -G "MinGW Makefiles"
    cmake --build . --config Release
    ```
-3. The binary will be in `build/f95_manager_gui.exe/`. Place it alongside your data (or copy your existing `app_settings.json` / `app_config.json`) and run it.
+3. The binary will be in main folder `f95_manager_gui.exe/`. Place it alongside your data (or copy your existing `app_settings.json` / `app_config.json`) and run it.
 
 ---
 
