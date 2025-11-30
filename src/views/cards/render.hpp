@@ -12,25 +12,15 @@
 #include "../../ui_constants.hpp"
 #include "../ui_helpers.hpp"
 #include "items/cover_helpers.hpp"
+#include "items/cover_hover.hpp"
+#include "items/meta_row.hpp"
+#include "items/tags_panel.hpp"
 #include "../../app/settings/settings.hpp"
 #include "../../tags/mod.hpp"
 #include "../../app/settings/helpers/open.hpp"
 
 namespace views {
 namespace cards {
-
-// Small "chip" button for tags/prefixes
-inline void chip(const std::string& text) {
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.f, 4.f));
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.25f, 0.25f, 0.30f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.30f, 0.30f, 0.35f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.20f, 0.20f, 0.25f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.85f, 0.90f, 1.0f));
-    ImGui::Button(text.c_str());
-    ImGui::PopStyleColor(4);
-    ImGui::PopStyleVar(2);
-}
 
 // Draw a cover placeholder with 16:9 aspect to match original tile visual weight
 inline void draw_cover_placeholder(float width) {
@@ -46,6 +36,7 @@ inline void draw_cover_placeholder(float width) {
 
 inline void draw_cover(const parser::GameInfo& gi, float width, const app::settings::Config* cfg, const tags::Catalog* cat) {
     const float h = width * 9.0f / 16.0f;
+
     // Make the cover area an interactive item for hover/click handling
     ImGui::PushID(gi.meta.title.c_str());
     ImGui::InvisibleButton("cover", ImVec2(width, h));
@@ -88,10 +79,12 @@ inline void draw_cover(const parser::GameInfo& gi, float width, const app::setti
     const float markers_h = 12.0f;
     ImVec2 markersMin = ImVec2(pos.x, rectMax.y - markers_h);
     ImVec2 markersMax = ImVec2(rectMax.x, rectMax.y);
+
     // Determine number of segments (use links count if available, min 3, max 10)
     int segments = (int)gi.links.size();
     segments = segments <= 0 ? 5 : segments;
     segments = segments > 10 ? 10 : segments;
+
     // Hover detection
     ImVec2 mouse = ImGui::GetIO().MousePos;
     bool over_cover = ImGui::IsItemHovered();
@@ -104,10 +97,11 @@ inline void draw_cover(const parser::GameInfo& gi, float width, const app::setti
         if (hovered_seg < 0) hovered_seg = 0;
         if (hovered_seg >= segments) hovered_seg = segments - 1;
     }
+
     // If clicked on cover, open hovered segment link
     if ((over_cover || over_markers) && ImGui::IsItemClicked() && !gi.links.empty()) {
         int idx = (int)gi.links.size() - 1;
-        if (hovered_seg >= 0) idx = std::min(hovered_seg, (int)gi.links.size() - 1);
+        if (hovered_seg >= 0) idx = (std::min)(hovered_seg, (int)gi.links.size() - 1);
         app::settings::helpers::open::url(gi.links[(size_t)idx].url);
     }
 
@@ -150,18 +144,41 @@ inline void draw_cover(const parser::GameInfo& gi, float width, const app::setti
         ImVec2 wMax = ImVec2(wMin.x + wtxt.x + 2.0f * wpad_x, wMin.y + wtxt.y + 2.0f * wpad_y);
         dl->AddRectFilled(wMin, wMax, IM_COL32(255, 196, 0, 230), 6.0f);
         dl->AddText(ImVec2(wMin.x + wpad_x, wMin.y + wpad_y), IM_COL32(20, 20, 20, 255), warn.c_str());
+
+        // Sticky overlay with details (tags/prefixes) on hover to mirror Rust behavior
+        ImVec2 mouse = ImGui::GetIO().MousePos;
+        const bool warn_hovered = (mouse.x >= wMin.x && mouse.x <= wMax.x && mouse.y >= wMin.y && mouse.y <= wMax.y);
+        if (warn_hovered && cfg && cat) {
+            auto wp = views::cards::items::cover_helpers::collect_warnings(gi, *cfg, *cat);
+            const auto& warn_tag_names = wp.first;
+            const auto& warn_pref_names = wp.second;
+
+            views::ui_helpers::show_sticky_overlay(
+                wMin, wMax, "warn_badge",
+                (float)ui_constants::kSpacing, (float)ui_constants::kPadding,
+                [&](){
+                    bool first_block = true;
+                    if (!warn_tag_names.empty()) {
+                        ImGui::TextUnformatted("Tags:");
+                        for (const auto& n : warn_tag_names) {
+                            ImGui::Text(" • %s", n.c_str());
+                        }
+                        first_block = false;
+                    }
+                    if (!warn_pref_names.empty()) {
+                        if (!first_block) ImGui::Dummy(ImVec2(1, (float)ui_constants::kSpacing));
+                        ImGui::TextUnformatted("Prefixes:");
+                        for (const auto& n : warn_pref_names) {
+                            ImGui::Text(" • %s", n.c_str());
+                        }
+                    }
+                }
+            );
+        }
     }
 
     // Reserve layout space for the cover: InvisibleButton already consumed it
     ImGui::PopID();
-}
-
-// Meta row: version on left, basic counters on right if available
-inline void draw_meta_row(const parser::GameInfo& gi, float inner_w) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.8f, 0.8f, 0.85f, 1.0f));
-    ImGui::TextUnformatted(gi.meta.version.empty() ? "v?" : gi.meta.version.c_str());
-    ImGui::PopStyleColor();
-    (void)inner_w;
 }
 
 // Render a single thread card resembling original layout.
@@ -178,7 +195,7 @@ inline void draw_thread_card(const parser::GameInfo& gi, float width, const app:
         ImVec2 p0 = ImGui::GetCursorScreenPos();
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(pad, pad));
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(spacing, spacing));
-        ImGui::BeginChild(("card##" + gi.meta.title).c_str(), ImVec2(width, 0), true, ImGuiWindowFlags_None);
+ImGui::BeginChild((std::string("card##") + gi.meta.title).c_str(), ImVec2(width, 0), true, ImGuiWindowFlags_None);
 
         // Cover at top
         draw_cover(gi, inner_w, cfg, cat);
@@ -199,29 +216,11 @@ inline void draw_thread_card(const parser::GameInfo& gi, float width, const app:
         ImGui::Dummy(ImVec2(1, 6));
 
         // Meta row (version etc.)
-        draw_meta_row(gi, inner_w);
+        items::meta_row::render(gi, inner_w);
 
         // Tags as chips
         if (!gi.meta.tags.empty()) {
-            ImGui::Dummy(ImVec2(1, 2));
-            // Wrap chips
-            float x0 = ImGui::GetCursorPosX();
-            float x = x0;
-            float avail = inner_w;
-            for (size_t i = 0; i < gi.meta.tags.size(); ++i) {
-                const std::string& t = gi.meta.tags[i];
-                ImVec2 label_size = ImGui::CalcTextSize(t.c_str());
-                float chip_w = label_size.x + 16.0f; // padding inside chip()
-                if ((x - x0) + chip_w > avail) {
-                    // new line
-                    ImGui::NewLine();
-                    x = x0;
-                } else if (i != 0) {
-                    ImGui::SameLine();
-                }
-                chip(t);
-                x += chip_w + ImGui::GetStyle().ItemSpacing.x;
-            }
+            items::tags_panel::render_chips(gi.meta.tags, inner_w);
         }
 
         // Links (provider + open)
@@ -253,7 +252,7 @@ inline void draw_thread_card(const parser::GameInfo& gi, float width, const app:
 // The data source can be a vector of GameInfo if multiple items are present.
 inline void draw_cards_grid(const std::vector<parser::GameInfo>& items, float cardWidth, const app::settings::Config* cfg, const tags::Catalog* cat, float spacing = (float)ui_constants::kSpacing) {
     float avail = ImGui::GetContentRegionAvail().x;
-    int cols = (int)std::max(1.0f, std::floor((avail + spacing) / (cardWidth + spacing)));
+    int cols = (int)(std::max)(1.0f, std::floor((avail + spacing) / (cardWidth + spacing)));
     int col = 0;
     for (size_t i = 0; i < items.size(); ++i) {
         draw_thread_card(items[i], cardWidth, cfg, cat);

@@ -106,3 +106,24 @@ settings-move-confirm-text = Installed games detected. All games will be moved t
 settings-move-confirm-move = Move
 settings-move-progress-title = Moving installed games
 settings-move-progress-text = Moving games… Do not close the app.
+
+# Tabs
+tabs-cards = Cards
+tabs-downloads = Downloads
+tabs-logs = Logs
+tabs-settings = Settings
+
+# Generic UI
+ui-thread-url = Thread URL:
+ui-fetch-parse = Fetch & Parse
+ui-no-data = No data. Enter thread URL and press Fetch & Parse.
+
+# Downloads panel
+downloads-target-dir = Target dir:
+downloads-urls = URLs (one per line):
+downloads-enqueue = Enqueue
+downloads-no-items = No downloads enqueued.
+ui-cookie-header = Cookie header:
+
+# Common
+common-cancel = Cancel

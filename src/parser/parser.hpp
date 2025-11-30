@@ -77,10 +77,27 @@ inline std::string extract_author(const std::string& html) {
 
 // try to find "Version: XYZ" or "vX.Y"
 inline std::string extract_version(const std::string& html) {
-    std::string v = regex_first(html, std::regex("Version\\s*:\\s*([^<\\n\\r]+)", std::regex::icase), 1);
-    if (!v.empty()) return trim(v);
-    v = regex_first(html, std::regex("\\bv(\\d+(?:\\.\\d+)*)\\b", std::regex::icase), 1);
-    return trim(v);
+    // Prefer explicit "Version: X[.Y]" entries where X[.Y] is numeric-only.
+    // If multiple, take the last numeric-only occurrence. Otherwise, fallback to "vX.Y" pattern.
+    std::vector<std::string> vers = regex_all(html, std::regex("Version\\s*:\\s*([^<\\n\\r]+)", std::regex::icase), 1);
+    std::regex numeric_only("^\\s*(\\d+(?:\\.\\d+)*)\\s*$");
+    for (auto it = vers.rbegin(); it != vers.rend(); ++it) {
+        std::smatch m;
+        std::string candidate = trim(*it);
+        if (std::regex_match(candidate, m, numeric_only)) {
+            return trim(m[1].str());
+        }
+    }
+    // Fallback: find the last "vX.Y" style.
+    std::vector<std::string> vtags = regex_all(html, std::regex("\\bv(\\d+(?:\\.\\d+)*)\\b", std::regex::icase), 1);
+    if (!vtags.empty()) {
+        return trim(vtags.back());
+    }
+    // As a last resort return the last "Version:" value trimmed.
+    if (!vers.empty()) {
+        return trim(vers.back());
+    }
+    return {};
 }
 
 // tags from anchors (<a class="tag">text</a>) or 'data-tag="text"'

@@ -103,6 +103,8 @@ static std::wstring to_wide(const std::string& s) {
     return ws;
 }
 
+enum class MainTab { Cards, Downloads, Logs, Settings };
+
 struct AppGuiState {
     std::string locale = "en";
     localization::Bundle bundle{};
@@ -142,6 +144,10 @@ struct AppGuiState {
     bool logs_autoscroll = true;
     std::size_t logs_prev_line_count = 0;
     bool about_open = false;
+    MainTab active_tab = MainTab::Cards;
+    // One-shot programmatic selection on next frame
+    MainTab pending_tab = MainTab::Cards;
+    bool pending_tab_set = false;
 };
 
 // Simple localization helpers (param replacement for { $max })
@@ -154,15 +160,30 @@ static std::string replace_all(std::string s, const std::string& from, const std
     }
     return s;
 }
+static std::string to_utf8_if_needed(const std::string& s) {
+    if (s.empty()) return s;
+    // Check if already valid UTF-8
+    int wlen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.c_str(), (int)s.size(), nullptr, 0);
+    if (wlen > 0) return s;
+    // Try CP1251 -> UTF-8 as fallback (common on RU Windows)
+    int wlen1251 = MultiByteToWideChar(1251, 0, s.c_str(), (int)s.size(), nullptr, 0);
+    if (wlen1251 <= 0) return s; // give up
+    std::wstring ws(wlen1251, L'\0');
+    MultiByteToWideChar(1251, 0, s.c_str(), (int)s.size(), &ws[0], wlen1251);
+    int u8len = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), nullptr, 0, nullptr, nullptr);
+    std::string out(u8len, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), &out[0], u8len, nullptr, nullptr);
+    return out;
+}
 static std::string l10n(localization::Bundle& bundle, const std::string& key) {
-    return localization::get(bundle, key);
+    return to_utf8_if_needed(localization::get(bundle, key));
 }
 static std::string l10n_with_max(localization::Bundle& bundle, const std::string& key, int max) {
-    auto base = localization::get(bundle, key);
+    auto base = to_utf8_if_needed(localization::get(bundle, key));
     return replace_all(base, "{ $max }", std::to_string(max));
 }
 static std::string l10n_with_n(localization::Bundle& bundle, const std::string& key, std::size_t n) {
-    auto base = localization::get(bundle, key);
+    auto base = to_utf8_if_needed(localization::get(bundle, key));
     return replace_all(base, "{ $n }", std::to_string(n));
 }
 
@@ -316,13 +337,13 @@ static void render_filters_panel(struct AppGuiState& st) {
                 ImGui::TextUnformatted("Included:");
                 ImGui::SameLine();
                 ImGui::BeginGroup();
-                for (size_t i=0;i<st.include_tags.size();) {
+                for (size_t i = 0; i < st.include_tags.size(); ) {
                     int id = st.include_tags[i];
                     auto it = st.catalog.tags.find(id);
-                    std::string name = (it==st.catalog.tags.end() ? std::to_string(id) : it->second);
+                    std::string name = (it == st.catalog.tags.end() ? std::to_string(id) : it->second);
                     std::string lab = name + " ×";
                     if (ImGui::SmallButton(lab.c_str())) {
-                        st.include_tags.erase(st.include_tags.begin()+i);
+                        st.include_tags.erase(st.include_tags.begin() + i);
                         continue;
                     }
                     ImGui::SameLine();
@@ -365,17 +386,17 @@ static void render_filters_panel(struct AppGuiState& st) {
             }
 
             // Render removable chips
-            if (!st.exclude_tags.empty()) {
-                ImGui::TextUnformatted("Excluded:");
+            if (!st.include_tags.empty()) {
+                ImGui::TextUnformatted("Included:");
                 ImGui::SameLine();
                 ImGui::BeginGroup();
-                for (size_t i=0;i<st.exclude_tags.size();) {
-                    int id = st.exclude_tags[i];
+                for (size_t i=0;i<st.include_tags.size();) {
+                    int id = st.include_tags[i];
                     auto it = st.catalog.tags.find(id);
                     std::string name = (it==st.catalog.tags.end() ? std::to_string(id) : it->second);
                     std::string lab = name + " ×";
                     if (ImGui::SmallButton(lab.c_str())) {
-                        st.exclude_tags.erase(st.exclude_tags.begin()+i);
+                        st.include_tags.erase(st.include_tags.begin()+i);
                         continue;
                     }
                     ImGui::SameLine();
@@ -384,23 +405,25 @@ static void render_filters_panel(struct AppGuiState& st) {
                 ImGui::EndGroup();
                 ImGui::NewLine();
             }
-        }
+    }
     }
 
     ImGui::Separator();
 
     // PREFIXES include/exclude
     auto build_prefix_options = [&](std::vector<std::pair<int,std::string>>& out) {
-        auto add = [&](const std::vector<tags::Group>& gs) {
+        auto add = [&](const char* cat_name, const std::vector<tags::Group>& gs) {
             for (const auto& g : gs) {
-                for (const auto& p : g.prefixes) out.emplace_back(p.id, p.name);
+                for (const auto& p : g.prefixes) {
+                    out.emplace_back(p.id, std::string(cat_name) + ": " + p.name);
+                }
             }
         };
         out.clear();
-        add(st.catalog.games);
-        add(st.catalog.comics);
-        add(st.catalog.animations);
-        add(st.catalog.assets);
+        add("Games", st.catalog.games);
+        add("Comics", st.catalog.comics);
+        add("Animations", st.catalog.animations);
+        add("Assets", st.catalog.assets);
         std::sort(out.begin(), out.end(), [](auto& a, auto& b){ return a.second < b.second; });
     };
 
@@ -503,7 +526,8 @@ static void render_filters_panel(struct AppGuiState& st) {
     // Bottom buttons and Library toggle
     {
         if (ImGui::Button(l10n(st.bundle, "common-logs").c_str())) {
-            // TODO: open logs view
+            st.pending_tab = MainTab::Logs;
+            st.pending_tab_set = true;
         }
         ImGui::SameLine();
         if (ImGui::Button(l10n(st.bundle, "common-about").c_str())) {
@@ -511,7 +535,8 @@ static void render_filters_panel(struct AppGuiState& st) {
         }
         ImGui::SameLine();
         if (ImGui::Button(l10n(st.bundle, "common-settings").c_str())) {
-            // TODO: open settings view
+            st.pending_tab = MainTab::Settings;
+            st.pending_tab_set = true;
         }
         std::string libLabel = st.library_on ? l10n(st.bundle, "filters-library-on") : l10n(st.bundle, "filters-library");
         if (libLabel.empty()) libLabel = st.library_on ? "Library (ON)" : "Library";
@@ -584,7 +609,85 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     // Style
-    ImGui::StyleColorsDark();
+    {
+        ImGuiStyle& style = ImGui::GetStyle();
+        ImGui::StyleColorsDark(&style);
+
+        // Scale and spacing to look less "stock"
+        style.ScaleAllSizes(1.05f);
+        style.WindowRounding = 6.0f;
+        style.ChildRounding = 6.0f;
+        style.FrameRounding = 6.0f;
+        style.PopupRounding = 6.0f;
+        style.ScrollbarRounding = 6.0f;
+        style.GrabRounding = 6.0f;
+        style.TabRounding = 6.0f;
+
+        style.WindowPadding = ImVec2(12, 10);
+        style.FramePadding = ImVec2(10, 6);
+        style.ItemSpacing = ImVec2(8, 6);
+        style.ItemInnerSpacing = ImVec2(6, 4);
+
+        ImVec4* colors = style.Colors;
+        colors[ImGuiCol_WindowBg]        = ImVec4(0.10f, 0.12f, 0.16f, 1.00f);
+        colors[ImGuiCol_ChildBg]         = ImVec4(0.09f, 0.10f, 0.13f, 1.00f);
+        colors[ImGuiCol_PopupBg]         = ImVec4(0.10f, 0.12f, 0.16f, 1.00f);
+
+        colors[ImGuiCol_Text]            = ImVec4(0.90f, 0.92f, 0.96f, 1.00f);
+        colors[ImGuiCol_TextDisabled]    = ImVec4(0.50f, 0.55f, 0.60f, 1.00f);
+
+        // Accent (blue)
+        colors[ImGuiCol_Button]          = ImVec4(0.18f, 0.45f, 0.90f, 0.60f);
+        colors[ImGuiCol_ButtonHovered]   = ImVec4(0.26f, 0.52f, 0.90f, 0.80f);
+        colors[ImGuiCol_ButtonActive]    = ImVec4(0.18f, 0.45f, 0.90f, 1.00f);
+
+        colors[ImGuiCol_Header]          = ImVec4(0.20f, 0.45f, 0.80f, 0.65f);
+        colors[ImGuiCol_HeaderHovered]   = ImVec4(0.26f, 0.52f, 0.90f, 0.80f);
+        colors[ImGuiCol_HeaderActive]    = ImVec4(0.18f, 0.45f, 0.90f, 1.00f);
+
+        colors[ImGuiCol_Tab]             = ImVec4(0.16f, 0.40f, 0.75f, 0.85f);
+        colors[ImGuiCol_TabHovered]      = ImVec4(0.26f, 0.52f, 0.90f, 0.95f);
+        colors[ImGuiCol_TabActive]       = ImVec4(0.20f, 0.48f, 0.85f, 1.00f);
+        colors[ImGuiCol_TabUnfocused]    = ImVec4(0.14f, 0.16f, 0.20f, 1.00f);
+        colors[ImGuiCol_TabUnfocusedActive]= ImVec4(0.18f, 0.45f, 0.90f, 0.70f);
+
+        colors[ImGuiCol_FrameBg]         = ImVec4(0.14f, 0.16f, 0.20f, 1.00f);
+        colors[ImGuiCol_FrameBgHovered]  = ImVec4(0.20f, 0.45f, 0.80f, 0.50f);
+        colors[ImGuiCol_FrameBgActive]   = ImVec4(0.20f, 0.45f, 0.80f, 0.80f);
+
+        colors[ImGuiCol_TitleBg]         = ImVec4(0.08f, 0.09f, 0.11f, 1.00f);
+        colors[ImGuiCol_TitleBgActive]   = ImVec4(0.12f, 0.13f, 0.16f, 1.00f);
+        colors[ImGuiCol_TitleBgCollapsed]= ImVec4(0.08f, 0.09f, 0.11f, 1.00f);
+
+        colors[ImGuiCol_Separator]       = ImVec4(0.22f, 0.24f, 0.28f, 1.00f);
+        colors[ImGuiCol_SeparatorHovered]= ImVec4(0.26f, 0.52f, 0.90f, 0.78f);
+        colors[ImGuiCol_SeparatorActive] = ImVec4(0.26f, 0.52f, 0.90f, 1.00f);
+
+        colors[ImGuiCol_ScrollbarBg]     = ImVec4(0.10f, 0.10f, 0.12f, 1.00f);
+        colors[ImGuiCol_ScrollbarGrab]   = ImVec4(0.20f, 0.22f, 0.28f, 1.00f);
+        colors[ImGuiCol_ScrollbarGrabHovered]= ImVec4(0.26f, 0.52f, 0.90f, 0.78f);
+        colors[ImGuiCol_ScrollbarGrabActive] = ImVec4(0.26f, 0.52f, 0.90f, 1.00f);
+    }
+
+    // Fonts (enable Cyrillic glyphs; load a Windows font or fallback)
+    {
+        ImGuiIO& ioFonts = ImGui::GetIO();
+        ioFonts.Fonts->Clear();
+        ImFont* font = nullptr;
+        const char* candidates[] = {
+            "C:/Windows/Fonts/segoeui.ttf",
+            "C:/Windows/Fonts/arial.ttf",
+            "C:/Windows/Fonts/tahoma.ttf"
+        };
+        for (const char* path : candidates) {
+            font = ioFonts.Fonts->AddFontFromFileTTF(path, 18.0f, nullptr, ioFonts.Fonts->GetGlyphRangesCyrillic());
+            if (font) break;
+        }
+        if (!font) {
+            font = ioFonts.Fonts->AddFontDefault();
+        }
+        ioFonts.FontDefault = font;
+    }
 
     // Setup Platform/Renderer backends
     ImGui_ImplWin32_Init(hwnd);
@@ -614,7 +717,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
         if (ImGui::Begin(titleUtf8.c_str()))
         {
             // Fetch bar
-            ImGui::Text("Thread URL:");
+            ImGui::Text("%s", l10n(st.bundle, "ui-thread-url").c_str());
             ImGui::SameLine();
             ImGui::SetNextItemWidth(600.0f);
             static char urlBuf[1024] = {0};
@@ -625,18 +728,21 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
             }
 
             ImGui::SameLine();
-            if (ImGui::Button("Fetch & Parse")) {
-                std::map<std::string, std::string> hdrs;
-                if (!st.cookieHeader.empty()) hdrs["Cookie"] = st.cookieHeader;
-                int status = 0;
-                auto body = app::fetch::get_body(st.threadUrl, status, hdrs);
-                if (status >= 200 && status < 300 && !body.empty()) {
-                    st.game = parser::parse_thread(body);
-                    st.fetchedOk = true;
-                    st.fetchStatus = "OK " + std::to_string(status);
-                } else {
-                    st.fetchedOk = false;
-                    st.fetchStatus = "HTTP " + std::to_string(status);
+            {
+                std::string fetchLbl = l10n(st.bundle, "ui-fetch-parse");
+                if (ImGui::Button(fetchLbl.empty() ? "Fetch & Parse" : fetchLbl.c_str())) {
+                    std::map<std::string, std::string> hdrs;
+                    if (!st.cookieHeader.empty()) hdrs["Cookie"] = st.cookieHeader;
+                    int status = 0;
+                    auto body = app::fetch::get_body(st.threadUrl, status, hdrs);
+                    if (status >= 200 && status < 300 && !body.empty()) {
+                        st.game = parser::parse_thread(body);
+                        st.fetchedOk = true;
+                        st.fetchStatus = "OK " + std::to_string(status);
+                    } else {
+                        st.fetchedOk = false;
+                        st.fetchStatus = "HTTP " + std::to_string(status);
+                    }
                 }
             }
             ImGui::SameLine();
@@ -646,8 +752,13 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
 
             if (ImGui::BeginTabBar("MainTabs"))
             {
-                if (ImGui::BeginTabItem("Cards"))
+                ImGuiTabItemFlags flags_cards     = (st.pending_tab_set && st.pending_tab == MainTab::Cards) ? ImGuiTabItemFlags_SetSelected : 0;
+                ImGuiTabItemFlags flags_downloads = (st.pending_tab_set && st.pending_tab == MainTab::Downloads) ? ImGuiTabItemFlags_SetSelected : 0;
+                ImGuiTabItemFlags flags_logs      = (st.pending_tab_set && st.pending_tab == MainTab::Logs) ? ImGuiTabItemFlags_SetSelected : 0;
+                ImGuiTabItemFlags flags_settings  = (st.pending_tab_set && st.pending_tab == MainTab::Settings) ? ImGuiTabItemFlags_SetSelected : 0;
+                if (ImGui::BeginTabItem((l10n(st.bundle, "tabs-cards").empty() ? "Cards" : l10n(st.bundle, "tabs-cards").c_str()), nullptr, flags_cards))
                 {
+                    st.active_tab = MainTab::Cards;
                     // Two-pane layout: left = cards list/grid, right = Filters panel (fixed width)
                     float right_w = 360.0f;
                     float spacing = ImGui::GetStyle().ItemSpacing.x;
@@ -659,7 +770,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
                         items.push_back(st.game);
                         views::cards::draw_cards_grid(items, (float)ui_constants::kCardWidth, &st.cfg, &st.catalog);
                     } else {
-                        ImGui::Text("No data. Enter thread URL and press Fetch & Parse.");
+                        { std::string nd = l10n(st.bundle, "ui-no-data"); ImGui::TextUnformatted(nd.empty() ? "No data. Enter thread URL and press Fetch & Parse." : nd.c_str()); }
                     }
                     ImGui::EndChild();
 
@@ -672,10 +783,11 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
 
                     ImGui::EndTabItem();
                 }
-                if (ImGui::BeginTabItem("Downloads"))
+                if (ImGui::BeginTabItem((l10n(st.bundle, "tabs-downloads").empty() ? "Downloads" : l10n(st.bundle, "tabs-downloads").c_str()), nullptr, flags_downloads))
                 {
+                    st.active_tab = MainTab::Downloads;
                     // Target dir
-                    ImGui::Text("Target dir:");
+                    ImGui::Text("%s", l10n(st.bundle, "downloads-target-dir").c_str());
                     ImGui::SameLine();
                     ImGui::SetNextItemWidth(600.0f);
                     static char tdirBuf[1024] = {0};
@@ -686,12 +798,12 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
                     }
 
                     // URLs (one per line)
-                    ImGui::Text("URLs (one per line):");
+                    ImGui::Text("%s", l10n(st.bundle, "downloads-urls").c_str());
                     static char urlsBuf[4096] = {0};
                     ImGui::InputTextMultiline("##urls", urlsBuf, sizeof(urlsBuf), ImVec2(800, 100));
 
                     // Enqueue
-                    if (ImGui::Button("Enqueue")) {
+                    if (([&](){ std::string enqLbl = l10n(st.bundle, "downloads-enqueue"); return ImGui::Button(enqLbl.empty() ? "Enqueue" : enqLbl.c_str()); })()) {
                         // Parse lines
                         std::vector<std::string> urls;
                         {
@@ -726,7 +838,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
 
                     // List current downloads
                     if (st.downloads_list.empty()) {
-                        ImGui::Text("No downloads enqueued.");
+                        { std::string emptyLbl = l10n(st.bundle, "downloads-no-items"); ImGui::TextUnformatted(emptyLbl.empty() ? "No downloads enqueued." : emptyLbl.c_str()); }
                     } else {
                         for (auto& p : st.downloads_list) {
                             auto id = p.first;
@@ -738,16 +850,21 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
                             ImGui::Text(" %llu / %llu bytes", (unsigned long long)prog.bytes_done, (unsigned long long)prog.bytes_total);
                             ImGui::ProgressBar(frac, ImVec2(600.f, 0.f));
                             ImGui::SameLine();
-                            if (ImGui::Button(std::string("Cancel##" + std::to_string(id)).c_str())) {
-                                app::downloads::cancel(id);
+                            {
+                                std::string cancelLbl = l10n(st.bundle, "common-cancel");
+                                std::string btn = (cancelLbl.empty() ? std::string("Cancel") : cancelLbl) + "##" + std::to_string(id);
+                                if (ImGui::Button(btn.c_str())) {
+                                    app::downloads::cancel(id);
+                                }
                             }
                         }
                     }
 
                     ImGui::EndTabItem();
                 }
-                if (ImGui::BeginTabItem("Logs"))
+                if (ImGui::BeginTabItem((l10n(st.bundle, "tabs-logs").empty() ? "Logs" : l10n(st.bundle, "tabs-logs").c_str()), nullptr, flags_logs))
                 {
+                    st.active_tab = MainTab::Logs;
                     // Controls row
                     bool autoScroll = st.logs_autoscroll;
                     std::string autoscrollLbl = l10n(st.bundle, "logs-autoscroll");
@@ -798,12 +915,14 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
 
                     ImGui::EndTabItem();
                 }
-                if (ImGui::BeginTabItem("Settings"))
+                if (ImGui::BeginTabItem((l10n(st.bundle, "tabs-settings").empty() ? "Settings" : l10n(st.bundle, "tabs-settings").c_str()), nullptr, flags_settings))
                 {
+                    st.active_tab = MainTab::Settings;
                     // Language
                     const char* langs[] = {"auto", "en", "ru"};
-                    ImGui::Text("Language:");
+                    ImGui::Text("%s", l10n(st.bundle, "settings-language").c_str());
                     ImGui::SameLine();
+                    int prev_lang = st.lang_idx;
                     if (ImGui::BeginCombo("##lang", langs[st.lang_idx])) {
                         for (int i=0;i<3;i++) {
                             bool sel = (st.lang_idx == i);
@@ -813,12 +932,21 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
                         ImGui::EndCombo();
                     }
                     st.cfg.language = langs[st.lang_idx];
+                    if (prev_lang != st.lang_idx) {
+                        // Update locale and reload localization bundle immediately
+                        st.locale = (st.cfg.language == std::string("auto") ? "en" : st.cfg.language);
+                        if (!localization::load_bundle("src/localization/resources", st.locale, st.bundle))
+                            localization::load_bundle("../src/localization/resources", st.locale, st.bundle);
+                        // Refresh window title for the new language
+                        titleUtf8 = localization::get(st.bundle, "app-window-title");
+                        if (titleUtf8.empty()) titleUtf8 = "F95 Manager";
+                    }
 
                     // Cookie header
                     static char cookieBuf[2048] = {0};
                     if (st.cookieHeader.size() >= sizeof(cookieBuf)) st.cookieHeader.resize(sizeof(cookieBuf) - 1);
                     std::snprintf(cookieBuf, sizeof(cookieBuf), "%s", st.cookieHeader.c_str());
-                    ImGui::Text("Cookie header:");
+                    ImGui::Text("%s", l10n(st.bundle, "ui-cookie-header").c_str());
                     ImGui::InputTextMultiline("##cookie", cookieBuf, sizeof(cookieBuf), ImVec2(800, 80));
                     st.cookieHeader = cookieBuf;
 
@@ -835,6 +963,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
                     }
                     ImGui::EndTabItem();
                 }
+                // Clear one-shot selection request after building tabs
+                st.pending_tab_set = false;
                 ImGui::EndTabBar();
             }
         }
