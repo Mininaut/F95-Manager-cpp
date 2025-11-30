@@ -38,11 +38,9 @@ Requirements:
 
 ## FAKE ->>
 
-1. Get the latest release: https://github.com/Mininaut/F95-Manager-cpp/releases/latest  
-2. Download `F95_manager.exe` (or the latest `F95_manager-vX.Y.Z.exe`).
-3. Run the executable.
-4. Authorize (login or paste cookies) to access F95 content (see “Authorization” below).
-5. Search, press Download, wait for extraction, then Play from your Library.
+1. compile
+2. Authorize (login or paste cookies) to access F95 content (see “Authorization” below).
+3. Search, press Download, wait for extraction, then Play from your Library.
 
 Tip: The app is portable. You can keep it on any drive and copy the whole folder elsewhere.
 
@@ -140,12 +138,12 @@ Use warnings as lightweight content markers you control.
 1. Install mingw64 (stable): https://www.mingw-w64.org
 2. Clone and build:
    ```
-   git clone https://github.com/Mininaut/F95-Manager-cpp.git
+   git clone --recurse-submodules https://github.com/Mininaut/F95-Manager-cpp.git
    cd F95-Manager-cpp
    cmake -G "MinGW Makefiles"
    cmake --build . --config Release
    ```
-3. The binary will be in main folder `f95_manager_gui.exe/`. Place it alongside your data (or copy your existing `app_settings.json` / `app_config.json`) and run it.
+3. The binary will be in main folder `f95_manager_gui.exe`. Place it alongside your data (or copy your existing `app_settings.json` / `app_config.json`) and run it.
 
 ---
 
