@@ -5,6 +5,9 @@ Desktop client for F95zone — browse, search, download, and manage games from a
 
 Built with CPP + imgui for SUPER speed and SUPER small filesize.
 
+> раст хуйня
+> © WaTLon
+
 ## Features
 
 - Search just like on F95 with all its features:
